@@ -1,0 +1,8 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "script",
+  "author": "Hoyeon",
+  "description": {"": "Export the active OP3_sim design to MJCF via ACDC4Robot, without dialogs"},
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
