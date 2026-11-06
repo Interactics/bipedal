@@ -30,6 +30,7 @@ To get higher jump, it needs actuators that have faster a angular velocity.
 
 - Made a simple bipedal robot using Fusion 360.
 - Spawned the robot in MuJoCo
+- Walking using ZMP and Jump using WBC-full kinematics
 
 
 # Next Steps
@@ -46,6 +47,7 @@ To get higher jump, it needs actuators that have faster a angular velocity.
 
 # Reference
 - Robotis OP3: https://github.com/robotis-git/robotis-op3
+- Whole-body Motion Planning with Centroidal Dynamics and Full Kinematics, 2014, doi: [10.1109/HUMANOIDS.2014.7041375](https://doi.org/10.1109/HUMANOIDS.2014.7041375).
 
 
 
