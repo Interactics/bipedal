@@ -68,9 +68,13 @@ def build():
     ET.SubElement(root, "site", name="imu", size="0.005", quat="0.5 -0.5 -0.5 -0.5")
     root.append(base)
 
-    # Red dot at the center of mass, moved every step by follow_com().
-    com = ET.SubElement(world, "body", name="com", mocap="true")
-    ET.SubElement(com, "site", name="com", type="sphere", size="0.012", rgba="1 0 0 1")
+    # Markers, moved every step by update_markers(): red = CoM, green = measured ZMP,
+    # blue = reference ZMP (only zmp_walk.py sets it). Parked below the floor until used.
+    for name, rgba, shape in (("com", "1 0 0 1", {"type": "sphere", "size": "0.012"}),
+                              ("zmp", "0 .8 0 1", {"type": "cylinder", "size": "0.012 0.001"}),
+                              ("zmp_ref", ".2 .4 1 1", {"type": "cylinder", "size": "0.007 0.002"})):
+        marker = ET.SubElement(world, "body", name=name, mocap="true", pos="0 0 -1")
+        ET.SubElement(marker, "site", name=name, rgba=rgba, **shape)
 
     # One position actuator per joint. No joint ranges yet, see CLAUDE.md.
     actuators = ET.SubElement(mjcf, "actuator")
@@ -117,9 +121,30 @@ def build():
     tree.write(OUT)
 
 
-def follow_com(model, data):
-    """Control callback: keep the red dot on the robot's center of mass."""
-    data.mocap_pos[0] = data.subtree_com[model.body("root").id]
+def marker(model, name):
+    """mocap_pos index of a marker body."""
+    return model.body_mocapid[model.body(name).id]
+
+
+def measured_zmp(model, data):
+    """ZMP (= center of pressure on flat ground) from the total contact wrench, or None if airborne.
+
+    cfrc_ext is the contact wrench about the robot's CoM; MuJoCo fills it every step because
+    of the accelerometer. Inside a control callback it is one physics step (2 ms) old.
+    """
+    c = data.subtree_com[model.body("root").id]
+    torque, force = np.split(data.cfrc_ext.sum(axis=0), 2)
+    if force[2] < 1.0:  # N
+        return None
+    return np.array([c[0] - (torque[1] + c[2] * force[0]) / force[2],
+                     c[1] + (torque[0] - c[2] * force[1]) / force[2]])
+
+
+def update_markers(model, data):
+    """Control callback: red dot on the CoM, green disc on the measured ZMP."""
+    data.mocap_pos[marker(model, "com")] = data.subtree_com[model.body("root").id]
+    zmp = measured_zmp(model, data)
+    data.mocap_pos[marker(model, "zmp")] = (0, 0, -1) if zmp is None else (*zmp, 0.002)
 
 
 def check(model):
@@ -146,6 +171,15 @@ def check(model):
     assert data.ncon >= 2, f"{data.ncon} contacts"
     dot_error = np.linalg.norm(data.site("com").xpos - data.subtree_com[root])
     assert dot_error < 0.001, f"CoM dot is {dot_error * 1e3:.1f} mm off"
+
+    # The ZMP from cfrc_ext must match the center of pressure of the individual contacts.
+    force, weight, cop = np.zeros(6), 0.0, np.zeros(2)
+    for i in range(data.ncon):
+        mujoco.mj_contactForce(model, data, i, force)
+        weight += force[0]
+        cop += force[0] * data.contact[i].pos[:2]
+    zmp_error = np.linalg.norm(measured_zmp(model, data) - cop / weight)
+    assert zmp_error < 0.001, f"measured ZMP is {zmp_error * 1e3:.1f} mm off the contact CoP"
     print(f"OK  mass {mass:.3f} kg | root moved {np.linalg.norm(moved) * 1e3:.1f} mm in 5 s | "
           f"upright {upright:.4f} | contacts {data.ncon} | peak torque {peak_torque:.2f} N·m")
 
@@ -153,7 +187,7 @@ def check(model):
 if __name__ == "__main__":
     build()
     op3 = mujoco.MjModel.from_xml_path(str(OUT))
-    mujoco.set_mjcb_control(follow_com)  # after loading: the compiler would trigger it too
+    mujoco.set_mjcb_control(update_markers)  # after loading: the compiler would trigger it too
     try:
         check(op3)
     except AssertionError as failure:  # still open the viewer, to see what went wrong

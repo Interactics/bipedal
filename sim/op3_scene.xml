@@ -91,8 +91,14 @@
                 </body>
             </body>
         </body>
-        <body name="com" mocap="true">
-            <site name="com" type="sphere" size="0.012" rgba="1 0 0 1" />
+        <body name="com" mocap="true" pos="0 0 -1">
+            <site name="com" rgba="1 0 0 1" type="sphere" size="0.012" />
+        </body>
+        <body name="zmp" mocap="true" pos="0 0 -1">
+            <site name="zmp" rgba="0 .8 0 1" type="cylinder" size="0.012 0.001" />
+        </body>
+        <body name="zmp_ref" mocap="true" pos="0 0 -1">
+            <site name="zmp_ref" rgba=".2 .4 1 1" type="cylinder" size="0.007 0.002" />
         </body>
     </worldbody>
     <actuator>

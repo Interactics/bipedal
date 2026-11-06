@@ -1,4 +1,6 @@
 # Bipedal Robot 
+A bipedal robot from scratch except actuators
+
 
 ### CAD
 ![CAD model](Documents/cad_model.png)
@@ -7,8 +9,20 @@
 ![MuJoCo simulation](Documents/mujoco_sim.gif)
 
 
-A bipedal robot from scratch except actuators
 
+## Results
+
+### Walking (ZMP) 
+![ZMP Walking](Documents/zmp_walk_circle.gif)
+
+### Jump - the Whole-body Control with full kinematics model
+
+![Jump](Documents/wbmp_jump.gif)
+
+It acheives 10 mm height jump.
+
+
+To get higher jump, it needs actuators that have faster a angular velocity.
 
 
 
