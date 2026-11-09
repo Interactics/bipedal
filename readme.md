@@ -13,9 +13,6 @@ A bipedal robot from scratch except actuators
 ## Results
 
 ### Walking (ZMP) 
-![ZMP Walking](docs/zmp_walk_circle.gif)
-
-### Sim2Real - forward and backward walking on the real robot
 ![Sim2Real walking](docs/sim2real_walk_line.gif)
 
 ### Jump - the Whole-body Control with full kinematics model
@@ -32,18 +29,20 @@ To get higher jump, it needs actuators that have faster a angular velocity.
 # Until Now
 
 - Made a simple bipedal robot using Fusion 360.
-- Spawned the robot in MuJoCo
-- Walking using ZMP and Jump using WBC-full kinematics
+- Spawned the robot in MuJoCo.
+- Walking using ZMP and Jump using WBC-full kinematics.
+- Assembled the robot in real.
+- Implemented ZMP-based walking.
 
 
 # Next Steps
-- Assemble the robot in real life. Currently, I am 3d printing.
-
+- Implement a walking algorithm based on Reinforcement Learning
+- Implement a walking algorithm based on Model-based control
+- How about hybrid system with RL and Model-based?
 
 # Challenges
-- Implement a walking algorithm based on Model-based control
-- Implement a walking algorithm based on Reinforcement Learning
-- Jump and land <- This will be a main challenge
+
+- Jump and land <- This will be a main challenge, but the angular velocity of actuators are not enough. 
 - Consecutive jumps <- Also a challenge
 - Maybe Backflip..? <- I am not sure if the robot has enough angular velocity to do this...
 
