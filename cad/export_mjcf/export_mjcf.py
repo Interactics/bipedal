@@ -7,7 +7,7 @@ Run with OP3_sim as the active, saved document. Writes to OUT_DIR/<design name>/
 """
 import adsk.core, adsk.fusion, os, sys, traceback
 
-OUT_DIR = '/Users/hoyeon_yu/Documents/private_ws/bipedal/robot_sim'
+OUT_DIR = '/Users/hoyeon_yu/Documents/private_ws/bipedal/robot_sim/model'
 EXPECTED_DOC = 'OP3_sim'
 
 

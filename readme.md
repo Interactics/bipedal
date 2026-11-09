@@ -3,21 +3,24 @@ A bipedal robot from scratch except actuators
 
 
 ### CAD
-![CAD model](Documents/cad_model.png)
+![CAD model](docs/cad_model.png)
 
 ### Simulation
-![MuJoCo simulation](Documents/mujoco_sim.gif)
+![MuJoCo simulation](docs/mujoco_sim.gif)
 
 
 
 ## Results
 
 ### Walking (ZMP) 
-![ZMP Walking](Documents/zmp_walk_circle.gif)
+![ZMP Walking](docs/zmp_walk_circle.gif)
+
+### Sim2Real - forward and backward walking on the real robot
+![Sim2Real walking](docs/sim2real_walk_line.gif)
 
 ### Jump - the Whole-body Control with full kinematics model
 
-![Jump](Documents/wbmp_jump.gif)
+![Jump](docs/wbmp_jump.gif)
 
 It acheives 10 mm height jump.
 

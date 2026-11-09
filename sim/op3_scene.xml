@@ -1,5 +1,5 @@
 <mujoco model="OP3_sim">
-    <compiler angle="radian" eulerseq="XYZ" inertiafromgeom="false" meshdir="../OP3_sim" />
+    <compiler angle="radian" eulerseq="XYZ" inertiafromgeom="false" meshdir="../model/OP3_sim" />
     <option timestep="0.002" integrator="implicitfast" />
     <asset>
         <mesh name="base_link" file="meshes/base_link.stl" scale="0.001 0.001 0.001" />

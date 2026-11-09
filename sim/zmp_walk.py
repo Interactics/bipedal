@@ -1,6 +1,9 @@
-"""ZMP walking along a circle:  python sim/zmp_walk.py
+"""ZMP walking:  python sim/zmp_walk.py [circle|line]
 
-0. Footsteps along the path (a circle, drawn as a yellow line on the floor), turning with it.
+Gaits: circle = one lap of a circle, turning left; line = N_LINE steps forward, feet together,
+N_LINE steps backward, feet together. Both start and end in the home (zero) pose: crouch, walk, stand up.
+
+0. Footsteps along the path (drawn as a yellow line on the floor), turning with it.
 1. Footsteps -> ZMP reference that stays inside the support foot.
 2. ZMP reference -> CoM path: preview control on the cart-table (LIPM) model, Kajita 2003.
 3. CoM path + foot paths -> joint angles: numerical whole-body IK on the MuJoCo model.
@@ -23,11 +26,12 @@ DOUBLE_SUPPORT = 0.2  # share of each step with both feet down, while the ZMP mo
 RADIUS = 0.25  # m, circle the feet midpoint walks along, turning left
 N_STEPS = 52  # one full lap
 STEP_LENGTH = 2 * np.pi * RADIUS / N_STEPS  # m along the path, ≈ 30 mm
+N_LINE = 10  # steps each way for the line gait
 STEP_HEIGHT = 0.02  # m, swing foot lift
 COM_HEIGHT = 0.15  # m, CoM above the floor while walking (knees bent; standing is 0.165)
 ZMP_INSET = 0.01  # m, ZMP target this far inside the sole center, toward the body
 PREVIEW_TIME = 1.6  # s
-CROUCH_TIME = 1.0  # s, zero pose -> walking posture
+CROUCH_TIME = 1.0  # s, zero pose -> walking posture, and back at the end
 HOLD_TIME = 1.0  # s, standing still before the first and after the last step
 FILTER_PASSES = 2  # dynamics filter passes; full-robot ZMP error 12 -> 3 mm with 2
 FEEDFORWARD = True  # add the planned joint torques to the servo commands
@@ -47,21 +51,34 @@ def path_pose(s):
     return np.array([RADIUS * np.sin(heading), RADIUS * (1 - np.cos(heading)), heading])
 
 
+def line_pose(s):
+    """Straight path along +x (s < 0 is behind the start)."""
+    return np.array([s, 0.0, 0.0])
+
+
+# gait -> (path, signed step lengths: swing foot lands this far along the path from the support foot)
+GAITS = {
+    "circle": (path_pose, [STEP_LENGTH] * N_STEPS + [0.0]),
+    "line": (line_pose, [STEP_LENGTH] * N_LINE + [0.0] + [-STEP_LENGTH] * N_LINE + [0.0]),
+}
+
+
 def rot_z(angle):
     c, s = np.cos(angle), np.sin(angle)
     return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 
 
-def plan(sole0, com0):
+def plan(sole0, com0, gait="circle"):
     """Footsteps -> per-sample ZMP reference (n, 2) and sole paths {side: (n, 4)}: x, y, z, yaw.
 
     The reference starts under the CoM and moves to the middle of the feet, so the
     preview controller starts without a jump.
     """
     start = (sole0["l"] + sole0["r"]) / 2
+    path, steps = GAITS[gait]
 
     def foot_at(side, s):
-        x, y, heading = path_pose(s)
+        x, y, heading = path(s)
         offset = sole0[side][1] - start[1]  # + for the left foot
         return np.array([start[0] + x - np.sin(heading) * offset,
                          start[1] + y + np.cos(heading) * offset, sole0[side][2], heading])
@@ -93,9 +110,9 @@ def plan(sole0, com0):
         return np.array([x + np.sin(yaw) * inward, y - np.cos(yaw) * inward])
 
     segment(HOLD_TIME, (feet["l"][:2] + feet["r"][:2]) / 2)
-    for i in range(N_STEPS + 1):  # the last step only brings the feet together
+    for i, step in enumerate(steps):  # a 0 step brings the feet together
         swing, support = ("l", "r") if i % 2 == 0 else ("r", "l")
-        arc[swing] = arc[support] + (STEP_LENGTH if i < N_STEPS else 0.0)
+        arc[swing] = arc[support] + step
         target = foot_at(swing, arc[swing])
         segment(STEP_TIME * DOUBLE_SUPPORT, on_foot(support))
         segment(STEP_TIME * (1 - DOUBLE_SUPPORT), on_foot(support), swing, target)
@@ -256,13 +273,13 @@ def at(samples, t):
     return samples[k] * (1 - (s - k)) + samples[k + 1] * (s - k)
 
 
-def make_walk(model):
+def make_walk(model, gait="circle"):
     """Plan the whole walk. Returns the control callback and the walk's duration in seconds."""
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     com0 = data.subtree_com[model.body("root").id][:2]
     sole0 = {side: data.geom(f"{side}_sole").xpos - [0, 0, SPAWN_CLEARANCE] for side in "lr"}
-    zmp_ref, feet = plan(sole0, com0)
+    zmp_ref, feet = plan(sole0, com0, gait)
     com, _ = preview_com(zmp_ref, com0)
     n = len(com)
     zmp_ref, feet = zmp_ref[:n], {side: p[:n] for side, p in feet.items()}
@@ -300,13 +317,16 @@ def make_walk(model):
         t = data.time - CROUCH_TIME
         if t < 0:  # crouch from the zero pose into the first planned posture
             data.ctrl[:] = commands[0] * smooth(data.time / CROUCH_TIME)
-        else:
+        elif t < n * DT:
             data.ctrl[:] = at(commands, t)
+        else:  # stand back up into the zero (home) pose
+            data.ctrl[:] = commands[-1] * (1 - smooth(min((t - n * DT) / CROUCH_TIME, 1.0)))
         data.mocap_pos[ref_marker] = (*at(zmp_ref, t), 0.003)
         update_markers(model, data)
 
     controller.zmp_ref, controller.targets = zmp_ref, targets
-    return controller, CROUCH_TIME + n * DT
+    controller.start = data.body("root").xpos[:2].copy()
+    return controller, CROUCH_TIME + n * DT + CROUCH_TIME
 
 
 def path_start(model):
@@ -316,11 +336,13 @@ def path_start(model):
     return (data.geom("l_sole").xpos[:2] + data.geom("r_sole").xpos[:2]) / 2
 
 
-def scene_with_path():
+def scene_with_path(gait="circle"):
     """The scene plus a yellow line on the floor along the walking path (visual only)."""
     start = path_start(mujoco.MjModel.from_xml_path(str(OUT)))
     spec = mujoco.MjSpec.from_file(str(OUT))
-    points = start + np.array([path_pose(s)[:2] for s in np.linspace(0, N_STEPS * STEP_LENGTH, 200)])
+    path, steps = GAITS[gait]
+    reach = np.cumsum(steps)
+    points = start + np.array([path(s)[:2] for s in np.linspace(min(reach.min(), 0), reach.max(), 200)])
     for a, b in zip(points[:-1], points[1:]):
         heading = np.arctan2(*(b - a)[::-1])
         spec.worldbody.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, contype=0, conaffinity=0,
@@ -330,8 +352,9 @@ def scene_with_path():
     return spec.compile()
 
 
-def check_walk(model, controller, duration):
-    """Walks the plan headless: stays upright, turns the full path, CoM near the line, ZMP close."""
+def check_walk(model, controller, duration, gait="circle"):
+    """Walks the plan headless: stays upright, follows the path (circle: turns the lap, CoM near the
+    line; line: back near the start), ZMP close, and ends standing in the home pose."""
     data = mujoco.MjData(model)
     act_qpos = model.jnt_qposadr[model.actuator_trnid[:, 0]]
     center = path_start(model) + [0, RADIUS]
@@ -346,7 +369,7 @@ def check_walk(model, controller, duration):
         turned += (new_heading - heading + np.pi) % (2 * np.pi) - np.pi
         heading = new_heading
         t = data.time - CROUCH_TIME
-        if t < 0:
+        if t < 0 or t >= len(controller.targets) * DT:
             continue
         lags.append(np.abs(data.qpos[act_qpos] - at(controller.targets, t)))
         com = data.subtree_com[model.body("root").id][:2]
@@ -354,6 +377,17 @@ def check_walk(model, controller, duration):
         zmp = measured_zmp(model, data)
         if zmp is not None:
             errors.append(np.linalg.norm(zmp - at(controller.zmp_ref, t)))
+    root = data.body("root").xpos[:2]
+    if gait == "line":
+        travel = N_LINE * STEP_LENGTH
+        print(f"walk: line ±{travel * 1e3:.0f} mm, ends {np.linalg.norm(root - controller.start) * 1e3:.0f} mm "
+              f"from the start | min upright {lowest:.3f} | joint lag mean {np.degrees(np.mean(lags)):.2f} deg | "
+              f"ZMP vs reference: mean {np.mean(errors) * 1e3:.1f} mm, max {np.max(errors) * 1e3:.1f} mm | "
+              f"end pose max |q| {np.degrees(np.abs(data.qpos[act_qpos]).max()):.1f} deg")
+        assert lowest > 0.95, f"fell or tipped: upright {lowest:.3f}"
+        assert np.linalg.norm(root - controller.start) < 0.05, "did not come back to the start"
+        assert np.abs(data.qpos[act_qpos]).max() < np.radians(3), "did not stand up into the home pose"
+        return
     planned = N_STEPS * STEP_LENGTH / RADIUS
     print(f"walk: turned {np.degrees(turned):.0f} deg (planned {np.degrees(planned):.0f}) | "
           f"CoM off the line: mean {np.mean(off_line) * 1e3:.1f} mm, max {np.max(off_line) * 1e3:.1f} mm | "
@@ -366,12 +400,14 @@ def check_walk(model, controller, duration):
 
 
 if __name__ == "__main__":
+    import sys
+    gait = sys.argv[1] if len(sys.argv) > 1 else "circle"
     build()
-    op3 = scene_with_path()
-    walk, seconds = make_walk(op3)
+    op3 = scene_with_path(gait)
+    walk, seconds = make_walk(op3, gait)
     mujoco.set_mjcb_control(walk)  # after loading: the compiler would trigger it too
     try:
-        check_walk(op3, walk, seconds)
+        check_walk(op3, walk, seconds, gait)
     except AssertionError as failure:  # still open the viewer, to see what went wrong
         print(f"CHECK FAILED: {failure}")
     mujoco.viewer.launch(op3)

@@ -11,7 +11,7 @@ import mujoco.viewer
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-RAW = ROOT / "OP3_sim" / "OP3_sim.xml"
+RAW = ROOT / "model" / "OP3_sim" / "OP3_sim.xml"
 OUT = ROOT / "sim" / "op3_scene.xml"
 
 # Tuning knobs. Only the torque limit comes from a datasheet.
@@ -27,7 +27,7 @@ EXPECTED_MASS = 1.506  # kg, from CLAUDE.md
 def foot_vertices(name):
     """Vertices of a link's binary STL, in meters, in that link's frame."""
     record = np.dtype([("normal", "<3f4"), ("verts", "<9f4"), ("attr", "<u2")])
-    tris = np.fromfile(ROOT / "OP3_sim" / "meshes" / f"{name}.stl", dtype=record, offset=84)
+    tris = np.fromfile(ROOT / "model" / "OP3_sim" / "meshes" / f"{name}.stl", dtype=record, offset=84)
     return tris["verts"].reshape(-1, 3) * 1e-3
 
 
@@ -47,7 +47,7 @@ def spawn_height():
 def build():
     tree = ET.parse(RAW)
     mjcf = tree.getroot()
-    mjcf.find("compiler").set("meshdir", "../OP3_sim")
+    mjcf.find("compiler").set("meshdir", "../model/OP3_sim")
     world = mjcf.find("worldbody")
 
     # Floor.

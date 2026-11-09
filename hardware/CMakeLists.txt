@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.16)
+project(hardware CXX)
+set(CMAKE_CXX_STANDARD 17)
+# ponytail: SDK compiled from source (it guards each platform's port handler), no install step
+set(DXL_SDK "$ENV{HOME}/Documents/robot_ws/DynamixelSDK/c++" CACHE PATH "DynamixelSDK c++ folder")
+file(GLOB DXL_SRC ${DXL_SDK}/src/dynamixel_sdk/*.cpp)
+add_library(dxl STATIC ${DXL_SRC})
+target_include_directories(dxl PUBLIC ${DXL_SDK}/include/dynamixel_sdk)
+foreach(tool led_monitor dxl_scan torque home walk)
+  add_executable(${tool} src/${tool}.cpp)
+  target_link_libraries(${tool} dxl)
+endforeach()
