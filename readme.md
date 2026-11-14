@@ -3,12 +3,10 @@ A bipedal robot from scratch except actuators
 
 
 ### CAD
-![CAD model](docs/cad_model.png)
+<img src="docs/cad_model.png" alt="CAD model" width="400">
 
 ### Simulation
 ![MuJoCo simulation](docs/mujoco_sim.gif)
-
-
 
 ## Results
 
