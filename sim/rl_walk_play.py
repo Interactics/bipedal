@@ -37,9 +37,9 @@ def load(folder, env):
     return lambda obs: model.predict(norm.normalize_obs(obs), deterministic=True)[0]
 
 
-def table(folder):
+def table(folder, env_cls=WalkVecEnv):
     for sim_dt in (0.004, 0.002):
-        env = WalkVecEnv(64, seed=1, sim_dt=sim_dt)
+        env = env_cls(64, seed=1, sim_dt=sim_dt)
         policy = load(folder, env) if sim_dt == 0.004 else policy
         print(f"physics step {sim_dt * 1e3:.0f} ms | command (vx, vy, yaw) -> measured, robots that fell in 10 s")
         for command in COMMANDS:
@@ -59,8 +59,8 @@ def table(folder):
         env.close()
 
 
-def show(folder, video, view, command):
-    env = WalkVecEnv(1, randomize=False)
+def show(folder, video, view, command, env_cls=WalkVecEnv):
+    env = env_cls(1, randomize=False)
     policy = load(folder, env)
     tour = [(10, command)] if command else TOUR
     full = mujoco.MjModel.from_xml_path(str(OUT))  # the detailed meshes, only for drawing
@@ -112,11 +112,15 @@ def show(folder, video, view, command):
     print(f"wrote {video} ({falls} falls)")
 
 
-if __name__ == "__main__":
+def main(env_cls=WalkVecEnv):
     folder, args = Path(sys.argv[1]), sys.argv
     build()
     command = tuple(float(x) for x in args[args.index("--cmd") + 1:args.index("--cmd") + 4]) if "--cmd" in args else None
     if "--video" in args or "--view" in args:
-        show(folder, args[args.index("--video") + 1] if "--video" in args else None, "--view" in args, command)
+        show(folder, args[args.index("--video") + 1] if "--video" in args else None, "--view" in args, command, env_cls)
     else:
-        table(folder)
+        table(folder, env_cls)
+
+
+if __name__ == "__main__":
+    main()

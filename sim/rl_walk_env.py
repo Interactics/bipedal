@@ -18,14 +18,19 @@ rotor inertia, encoder zero offsets, IMU tilt, command latency (0-20 ms), sensor
 Self-check:  python sim/rl_walk_env.py   (must stand 20 s with zero action; prints reward terms and speed)
 """
 import copy
+import hashlib
+import inspect
 import time
 
 import gymnasium as gym
 import mujoco
 import numpy as np
 from mujoco import rollout
+import torch
 from scipy.spatial import ConvexHull
+from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.vec_env import VecEnv
+from torch import nn
 
 from run_sim import OUT, ROOT, STALL_TORQUE, build
 
@@ -47,18 +52,23 @@ COMMAND = {"low": np.array([-0.1, -0.08, -0.8]), "high": np.array([0.3, 0.08, 0.
 STAND_SHARE = 0.1  # of the episodes get the command 0, 0, 0
 COMMAND_STEPS = 250  # a new command every 5 s
 
+# v1 weights (feet_phase 1.0 at 2 cm, tilt -2, height -50, hip_pose -0.5) walked every command after 120 M steps,
+# but crouched 15 mm, lifted the feet 15-25 of 30 mm, unevenly, with the right foot turned out 6-9 deg.
+# v2 (feet_phase 1.5 at 12 mm, tilt -5, height -400, hip_pose -2, +40 M steps) fixed the foot lift (24-32 mm,
+# even) but not the crouch (13 mm) or the turned-out right foot -> height -1500 and SymmetricPolicy.
+FOOT_SIGMA = 0.012  # m
 REWARD = {  # weight of each term in WalkVecEnv._reward
     "alive": 0.5,
     "track_lin": 1.5,  # exp(-(velocity error / 0.1 m/s)^2)
     "track_yaw": 0.75,  # exp(-(yaw rate error)^2 / 0.1)
-    "feet_phase": 1.0,  # exp(-(foot height error / 2 cm)^2): lift the right foot at the right time
-    "tilt": -2.0,  # body not upright
-    "height": -50.0,  # (pelvis height - standing height)^2: no deep crouch
+    "feet_phase": 1.5,  # exp(-(foot height error / FOOT_SIGMA)^2): lift the right foot at the right time
+    "tilt": -5.0,  # body not upright
+    "height": -1500.0,  # (pelvis height - standing height)^2: no deep crouch (13 mm low costs 0.25)
     "bounce": -0.5,  # vertical velocity^2
     "wobble": -0.05,  # roll / pitch rate^2
     "torque": -5e-4,  # sum of torque^2
     "action_rate": -0.02,  # sum of (action - last action)^2: no jitter
-    "hip_pose": -0.5,  # hip yaw / roll away from 0: toes point forward
+    "hip_pose": -2.0,  # hip yaw / roll away from 0: toes point forward
     "slip": -0.5,  # foot sliding while it touches the floor
     "foot_flat": -2.0,  # sole not parallel to the floor
     "feet_close": -10.0,  # feet nearer than 8 cm sideways
@@ -80,12 +90,37 @@ RANDOM = {
     "noise": {"q": 0.005, "dq": 0.3, "gravity": 0.03, "gyro": 0.1},
 }
 
+# Left-right mirror image of an observation / action: index order and sign. Every joint has the opposite sign
+# on the other leg (CLAUDE.md sign table); gravity y, gyro x and z, command vy and yaw flip; the gait clock moves
+# half a period. The self-check below tests this against the simulation.
+_SWAP = np.r_[6:12, 0:6]
+ACT_MIRROR = (_SWAP, -np.ones(12))
+OBS_MIRROR = (np.r_[_SWAP, 12 + _SWAP, 24:35, 35 + _SWAP],
+              np.r_[-np.ones(24), [1, -1, 1], [-1, 1, -1], [1, -1, -1], [-1, -1], -np.ones(12)])
+
 Q, DQ = slice(8, 20), slice(26, 38)  # joint angles / velocities in mjSTATE_FULLPHYSICS: [time, qpos 19, qvel 18]
 ROOT_VEL = slice(20, 22)
 
 
 def make_model(sim_dt=SIM_DT):
     """op3_scene.xml with hull-only meshes (35 MB -> 1.8 MB per copy), the servo model, and reward sensors."""
+    # Cached in sim/runs.nosync (iCloud skips *.nosync): ~/Documents is synced, and with a full disk reading
+    # one mesh file took 13 s to minutes. The key changes when the scene or a mesh file changes.
+    meshes = sorted((ROOT / "model" / "OP3_sim" / "meshes").glob("*.stl"))
+    key = hashlib.md5(OUT.read_bytes() + inspect.getsource(_compile_slim).encode()
+                      + repr([(f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in meshes]).encode()).hexdigest()
+    cache = ROOT / "sim" / "runs.nosync" / f"op3_slim_{key[:10]}.mjb"
+    if not cache.exists():
+        cache.parent.mkdir(exist_ok=True)
+        for old in cache.parent.glob("op3_slim_*.mjb"):
+            old.unlink()
+        mujoco.mj_saveModel(_compile_slim(), str(cache))
+    model = mujoco.MjModel.from_binary_path(str(cache))
+    model.opt.timestep = sim_dt
+    return model
+
+
+def _compile_slim():
     spec = mujoco.MjSpec.from_file(str(OUT))
     record = np.dtype([("normal", "<3f4"), ("verts", "<9f4"), ("attr", "<u2")])
     for mesh in spec.meshes:  # MuJoCo collides meshes as convex hulls anyway; the full meshes are only for looks
@@ -105,7 +140,6 @@ def make_model(sim_dt=SIM_DT):
     for actuator in spec.actuators:
         spec.add_sensor(name=f"torque_{actuator.name}", type=S.mjSENS_ACTUATORFRC, objtype=O.mjOBJ_ACTUATOR,
                         objname=actuator.name)
-    spec.option.timestep = sim_dt
     model = spec.compile()
     model.actuator_biasprm[:, 2] = 0  # the XM430's Position D gain is 0 by default ...
     model.dof_damping[6:] = STALL_TORQUE / NO_LOAD_SPEED  # ... its damping is the back-EMF: 0.85 N·m·s/rad
@@ -249,7 +283,7 @@ class WalkVecEnv(VecEnv):
             "alive": np.ones(self.num_envs),
             "track_lin": np.exp(-((self.command[:, :2] - velocity[:, :2]) ** 2).sum(1) / 0.1 ** 2),
             "track_yaw": np.exp(-(self.command[:, 2] - self.gyro[:, 2]) ** 2 / 0.1),
-            "feet_phase": np.exp(-((foot_z - self.swing_height()) ** 2).sum(1) / 0.02 ** 2),
+            "feet_phase": np.exp(-((foot_z - self.swing_height()) ** 2).sum(1) / FOOT_SIGMA ** 2),
             "tilt": (self.gravity[:, :2] ** 2).sum(1),
             "height": (get("base_pos")[:, 2] - self.height0) ** 2,
             "bounce": velocity[:, 2] ** 2,
@@ -337,8 +371,82 @@ class WalkVecEnv(VecEnv):
         return [False] * self.num_envs
 
 
+class SymmetricNets(nn.Module):
+    """Actor and critic that answer a mirrored observation with the mirrored action / the same value."""
+
+    def __init__(self, obs_dim, act_dim, hidden=256):
+        super().__init__()
+        net = lambda out: nn.Sequential(nn.Linear(obs_dim, hidden), nn.ELU(), nn.Linear(hidden, hidden), nn.ELU(),
+                                        nn.Linear(hidden, out))
+        self.pi, self.vf = net(act_dim), net(1)
+        self.latent_dim_pi, self.latent_dim_vf = act_dim, 1
+        for name, (perm, sign) in (("obs", OBS_MIRROR), ("act", ACT_MIRROR)):
+            self.register_buffer(f"{name}_perm", torch.as_tensor(perm))
+            self.register_buffer(f"{name}_sign", torch.as_tensor(sign, dtype=torch.float32))
+
+    def mirror(self, obs):
+        return obs[:, self.obs_perm] * self.obs_sign
+
+    def forward_actor(self, obs):
+        return 0.5 * (self.pi(obs) + self.pi(self.mirror(obs))[:, self.act_perm] * self.act_sign)
+
+    def forward_critic(self, obs):
+        return 0.5 * (self.vf(obs) + self.vf(self.mirror(obs)))
+
+    def forward(self, obs):
+        return self.forward_actor(obs), self.forward_critic(obs)
+
+
+class SymmetricPolicy(ActorCriticPolicy):
+    """SB3 policy whose mean action is left-right symmetric by construction: no limp, no favourite leg.
+    ponytail: exact only if the observation normalization is symmetric too; rl_walk_train.py keeps it so."""
+
+    def _build_mlp_extractor(self):
+        self.mlp_extractor = SymmetricNets(self.features_dim, self.action_space.shape[0])
+
+    def _build(self, lr_schedule):
+        super()._build(lr_schedule)
+        self.action_net, self.value_net = nn.Identity(), nn.Identity()  # SymmetricNets already ends in them
+        with torch.no_grad():
+            self.mlp_extractor.pi[-1].weight *= 0.01  # a new policy starts near the DEFAULT pose
+        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+
+
+def check_mirror(act_mirror=ACT_MIRROR):
+    """-> (feet, obs). feet [m]: a pose and its mirror image must put the feet at mirrored places (kinematics
+    only, exact). obs: two robots, one doing the mirror image of the other, must keep mirrored observations."""
+    env = WalkVecEnv(n_envs=2, randomize=False)
+    m, d, rng, feet = env.nominal, env.scratch, np.random.default_rng(0), 0.0
+    for _ in range(20):
+        q, pos = rng.uniform(-0.5, 0.5, 12), []
+        for joints in (q, q[act_mirror[0]] * act_mirror[1]):
+            d.qpos[7:] = joints
+            mujoco.mj_kinematics(m, d)
+            pos.append({side: d.geom(f"{side}_sole").xpos - d.site("imu").xpos for side in "lr"})
+        feet = max(feet, *(np.abs(pos[0][a] * [1, -1, 1] - pos[1][b]).max() for a, b in ("lr", "rl")))
+    env.fixed_command = (0.2, 0.05, 0.4)
+    env.reset()
+    env.command[1] = (0.2, -0.05, -0.4)
+    env.phase[:] = (0.1, 0.6)
+    worst = 0.0
+    for _ in range(10):  # gentle and short: the CAD model is not perfectly left-right symmetric, and that grows
+        action = rng.uniform(-0.2, 0.2, 12)
+        obs, _, _, _ = env.step(np.stack([action, action[ACT_MIRROR[0]] * ACT_MIRROR[1]]).astype(np.float32))
+        worst = max(worst, np.abs(obs[0][OBS_MIRROR[0]] * OBS_MIRROR[1] - obs[1]).max())
+    env.close()
+    return feet, worst
+
+
 if __name__ == "__main__":
     build()
+    feet, worst = check_mirror()
+    print(f"mirror check: mirrored pose puts the feet within {feet * 1e3:.2f} mm, mirrored robot's observation "
+          f"within {worst:.3f}")
+    assert feet < 0.0005 and worst < 0.05, "OBS_MIRROR / ACT_MIRROR do not match the robot"
+    for joint in range(6):  # the check itself must catch a wrong sign on any joint
+        sign = -np.ones(12)
+        sign[[joint, joint + 6]] = 1
+        assert check_mirror((ACT_MIRROR[0], sign))[0] > 0.003, f"mirror check is blind to joint {joint}"
     env = WalkVecEnv(n_envs=4, randomize=False)
     com = env.scratch.subtree_com[env.nominal.body("root").id]
     soles = np.mean([env.scratch.geom(f"{s}_sole").xpos for s in "lr"], axis=0)
